@@ -3,6 +3,7 @@ package app
 import (
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -115,6 +116,7 @@ func (a *app) loadMine(lib *library) {
 	if !lib.can("playlists") {
 		return
 	}
+	lib.mineAt = time.Now()
 	go func() {
 		lists, err := lib.src.Playlists()
 		a.post(func() {

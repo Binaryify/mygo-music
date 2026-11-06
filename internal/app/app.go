@@ -68,6 +68,8 @@ type app struct {
 	plugins []*plugin.Plugin
 	allLibs []*library // every plugin, on or off; libs are those on
 
+	wasBehind bool // the window wasn't at the front as last built
+
 	captions  captionState    // the episode playing's captions, and the model they take
 	installer pluginInstaller // installing and updating plugins
 	// links are the app's links opened before its window was made, macOS
