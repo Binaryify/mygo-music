@@ -160,20 +160,25 @@ func loadArt(key string) (*ui.Bitmap, image.Image, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	bmp, img, err := decodeArt(b)
+	b = stillCover(b)
+	img, _, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	// The bitmap is decoded only from the data it keeps, so a big cover
+	// shown small never makes a full-size bitmap it would throw away.
 	if size := img.Bounds().Size(); px > 0 && max(size.X, size.Y) > px*3/2 {
-		small, data, err := shrinkArt(img, px)
-		if err != nil {
-			return bmp, img, len(b), nil
+		if small, data, err := shrinkArt(img, px); err == nil {
+			bmp, err := ui.DecodeBitmap(data)
+			if err != nil {
+				return nil, nil, 0, err
+			}
+			return bmp, small, len(data), nil
 		}
-		bmp, err = ui.DecodeBitmap(data)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		return bmp, small, len(data), nil
+	}
+	bmp, err := ui.DecodeBitmap(b)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 	return bmp, img, len(b), nil
 }

@@ -1,10 +1,16 @@
 package app
 
 import (
+	"bytes"
+	"image"
+	"image/jpeg"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
+
+	"mygo-music/internal/music"
 )
 
 // An animated WebP cover, as some playlists have, shows its first frame,
@@ -87,4 +93,33 @@ func TestArtCacheKeepsHeldCovers(t *testing.T) {
 		t.Error("loaded again a cover something still held")
 	}
 	runtime.KeepAlive(held)
+}
+
+// A big cover loaded as a thumbnail stays within a budget. Its full-size
+// bitmap was decoded and thrown away before the thumbnail was made, which
+// took about 120 MiB for a 4000-pixel cover shown at 96.
+func TestBigCoverThumbnailAllocations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cover.jpg")
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 4000, 4000)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := sized(music.FileURL(path), 96)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	bmp, _, _, err := loadArt(key)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w, h := bmp.Size(); w != 96 || h != 96 {
+		t.Errorf("thumbnail is %d×%d, want 96×96", w, h)
+	}
+	if got, budget := after.TotalAlloc-before.TotalAlloc, uint64(64<<20); got > budget {
+		t.Errorf("loading a 96×96 thumbnail allocated %d bytes, budget %d", got, budget)
+	}
 }
