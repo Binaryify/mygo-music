@@ -3,6 +3,8 @@ package plugin
 import (
 	"errors"
 	"log"
+	"strings"
+	"time"
 
 	"mygo-music/internal/music"
 )
@@ -326,3 +328,44 @@ var (
 	_ music.Source   = (*Plugin)(nil)
 	_ music.Recorder = (*Plugin)(nil)
 )
+
+// imageHeadersTimeout is how long a cover waits on the plugin for its headers.
+const imageHeadersTimeout = 5 * time.Second
+
+// ImageHeaders asks the plugin for the headers to ask for a picture at url
+// with, such as the cookie of its session, and how long they hold for the
+// pictures of url's host: 0 when it didn't say. It answers nil when the
+// plugin has none for it.
+func (p *Plugin) ImageHeaders(url string) (map[string]string, time.Duration, error) {
+	var out *struct {
+		Headers map[string]string `json:"headers"`
+		MaxAge  float64           `json:"maxAge"` // seconds
+	}
+	if err := p.callWithin(imageHeadersTimeout, "imageHeaders", map[string]string{"url": url}, &out); err != nil {
+		return nil, 0, err
+	}
+	if out == nil {
+		return nil, 0, nil
+	}
+	age := time.Duration(max(out.MaxAge, 0) * float64(time.Second))
+	if len(out.Headers) == 0 {
+		return nil, age, nil
+	}
+	return out.Headers, age, nil
+}
+
+// Reaches reports whether the plugin's network permission reaches host, and
+// whether it names it, or a domain above it, rather than allowing any host.
+func (p *Plugin) Reaches(host string) (reaches, named bool) {
+	host = strings.ToLower(host)
+	for _, h := range p.manifest.Permissions.Network {
+		h = strings.ToLower(h)
+		switch {
+		case h == "*":
+			reaches = true
+		case h == host, strings.HasPrefix(h, "*.") && strings.HasSuffix(host, h[1:]):
+			return true, true
+		}
+	}
+	return reaches, false
+}

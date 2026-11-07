@@ -101,6 +101,7 @@ Export a function for each thing the plugin does. Each takes one object of param
 | `postComment` | `{trackId, text}` | `Comment` |
 | `lyrics` | `{id}` | `{lrc, translation}`, or `{lines}` with timed `words` |
 | `stream` | `{id, quality}` | `{url, type, headers, size, gain, peak}`, where `type` is `mp3`, `flac`, `ogg`, `wav`, `m4a` (ALAC or AAC-LC) or `aac` (AAC-LC in ADTS) |
+| `imageHeaders` | `{url}` | `{headers, maxAge}` or `null`: the headers to ask for the pictures of `url`'s host with, such as the cookie of a session the service keeps its covers behind, and for how many seconds they hold |
 | `remotePlay` | `{ids, start, position}` | |
 | `remotePause`, `remoteResume` | | |
 | `remoteSeek` | `{position}` | |
@@ -126,6 +127,15 @@ Put the translations in `locales/<language>.json` next to `plugin.json`: `locale
 ```
 
 The app translates the plugin's `name`, its settings' `label` and `help` and its `navigation` titles with them. For what the plugin says itself, such as a page's titles or an error's message, `host.t(text)` answers the translation, or `text` when there's none, and `host.language()` the listener's language, `en` or `zh-CN`. Both follow the listener as they change it, and the page they're on loads again.
+
+The app fetches the covers itself, by their `imageUrl`. For a service whose pictures need more than that, such as its session's cookie, export `imageHeaders`. Before loading a cover, the app asks it of the plugins that are on whose network permission reaches the cover's host: first those naming the host, then those allowed any, which should answer `null` for covers not their own. The first headers answered go with every cover of that host for `maxAge` seconds, or five minutes, and are asked anew when the server turns them down. They go only to that host and those below it, not to another it redirects to, as `stream`'s `headers` do, and the app keeps nothing but the URL, so the token in them can change at any time:
+
+```js
+export function imageHeaders({ url }) {
+  if (new URL(url).host !== new URL(host.setting("server")).host) return null;
+  return { headers: { cookie: `music-token=${host.storage.get("token")}` }, maxAge: 600 };
+}
+```
 
 With `"playback": "stream"`, the app plays what `stream` answers. With `"playback": "remote"`, the plugin makes the sound itself, or has another program do so, and the app calls the `remote` functions and polls `remoteState`.
 

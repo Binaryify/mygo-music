@@ -66,6 +66,8 @@ type app struct {
 	*library
 	local   *local.Source // the built-in source, nil in tests that have none
 	plugins []*plugin.Plugin
+	// covers asks the plugins that are on for the headers of their covers.
+	covers  *coverHeaders
 	allLibs []*library // every plugin, on or off; libs are those on
 
 	wasBehind bool // the window wasn't at the front as last built
@@ -231,6 +233,8 @@ func (a *app) makeSources() {
 	plugin.SetAppVersion(mygo.App.Version())
 	plugin.SetWebSignIn(a.webSignIn)
 	a.plugins = plugin.Discover(pluginsDir(), userDataDir("plugin-data"))
+	a.covers = newCoverHeaders()
+	music.CoverHeaders = a.covers.get
 	for _, p := range a.plugins {
 		lib := newLibrary(p)
 		if !slices.ContainsFunc(a.allLibs, func(l *library) bool { return l.id == lib.id }) {
@@ -259,6 +263,15 @@ func (a *app) enabledChanged() {
 	}
 	if len(a.libs) == 0 && len(a.allLibs) > 0 {
 		a.libs = a.allLibs[:1]
+	}
+	if a.covers != nil {
+		var on []imageHeaderer
+		for _, lib := range a.libs {
+			if p := pluginOf(lib); p != nil {
+				on = append(on, p)
+			}
+		}
+		a.covers.setPlugins(on)
 	}
 }
 
