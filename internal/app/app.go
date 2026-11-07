@@ -97,6 +97,11 @@ type app struct {
 	dailySpin   spinState          // the record on the feature card
 	dailyBars   barState           // the bars on its play button
 	settingText map[string]*string // the settings of sources, as being typed
+	// proxySet is the way out the app last asked of netclient, by its mode
+	// and address, for a change of the settings to apply once.
+	proxySet [2]string
+	// proxyText is the proxy's address as it's being typed.
+	proxyText *string
 
 	trackList ui.ListState
 	// Where the page and the sidebar are scrolled, kept while Now Playing
@@ -336,6 +341,8 @@ func Run() error {
 	mygo.App.WhenReady(func() {
 		a.settings = loadSettings()
 		a.settings.applyAppearance()
+		a.settings.applyProxy()
+		a.proxySet = [2]string{a.settings.Proxy, a.settings.ProxyAddress}
 		i18n.SetLanguage(i18n.Resolve(a.settings.Language, systemLanguages()))
 		a.npPane = a.lyricsPaneChosen()
 		a.makeSources()

@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,6 +39,7 @@ import (
 
 	"mygo-music/internal/i18n"
 	"mygo-music/internal/music"
+	"mygo-music/internal/netclient"
 )
 
 const (
@@ -486,7 +486,8 @@ func (p *Plugin) webOptions() webapi.Options {
 	if len(hosts) == 0 {
 		return webapi.Options{}
 	}
-	opts := webapi.Options{Client: &http.Client{Timeout: 10 * time.Minute}}
+	// A fetch goes the listener's way out, as the app's own requests do.
+	opts := webapi.Options{Client: netclient.Client(10 * time.Minute)}
 	for _, h := range hosts {
 		if h == "*" {
 			return opts

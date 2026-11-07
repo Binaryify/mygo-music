@@ -18,7 +18,12 @@ import (
 
 	"mygo-music/internal/mp4"
 	"mygo-music/internal/music"
+	"mygo-music/internal/netclient"
 )
+
+// songClient fetches what plays and what the listener keeps: a song comes in
+// for as long as it takes, so it has no timeout of its own.
+var songClient = netclient.Client(0)
 
 // A download fetches a song as it plays: readers wait for the bytes they
 // need, so playback starts with the first ones. The song comes into a file
@@ -105,7 +110,7 @@ func (d *download) run(ctx context.Context, url string, headers map[string]strin
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	res, err := music.HeadersStay(http.DefaultClient, req.URL.Hostname(), headers).Do(req)
+	res, err := music.HeadersStay(songClient, req.URL.Hostname(), headers).Do(req)
 	if err != nil {
 		finish(err)
 		return

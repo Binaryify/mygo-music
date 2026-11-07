@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+
+	"mygo-music/internal/netclient"
 )
 
 // A file of the model, at its path in the model's directory.
@@ -211,7 +213,7 @@ func get(ctx context.Context, url string, out *os.File, h hash.Hash, have, size 
 	if have > 0 {
 		req.Header.Set("Range", "bytes="+strconv.FormatInt(have, 10)+"-")
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := netclient.Client(0).Do(req)
 	if err != nil {
 		return err
 	}

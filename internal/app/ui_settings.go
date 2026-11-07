@@ -14,6 +14,7 @@ import (
 	"mygo-music/internal/i18n"
 	"mygo-music/internal/local"
 	"mygo-music/internal/music"
+	"mygo-music/internal/netclient"
 	"mygo-music/internal/plugin"
 )
 
@@ -64,6 +65,18 @@ func (a *app) openSettings() {
 func (a *app) openSourceSettings() {
 	a.settingsPage, a.settingsQuery = "plugins", ""
 	a.openSettings()
+}
+
+// applyProxy makes the app reach the network as the settings say, once per
+// change, and keeps them there.
+func (a *app) applyProxy() {
+	want := [2]string{a.settings.Proxy, a.settings.ProxyAddress}
+	if a.proxySet == want {
+		return
+	}
+	a.proxySet = want
+	a.settings.applyProxy()
+	a.changed()
 }
 
 // changed applies the settings everywhere and keeps them.
@@ -426,6 +439,47 @@ func (a *app) settingsSections(c *ui.Context, p palette) []settingsSection {
 				a.changed()
 			}
 		})
+	})
+
+	add("network", T("Network"), iconGlobe, func(row settingsRow, block settingsBlock) {
+		// The ways out, in the order the settings offer them.
+		modes := []string{netclient.System, netclient.Custom, netclient.Direct}
+		labels := []string{"Follow the System", "Custom", "Direct"}
+		at := 0
+		for i, m := range modes {
+			if m == s.Proxy {
+				at = i
+			}
+		}
+		row(T("Proxy"), T("How the app reaches the internet, as a browser does"), func() {
+			if i, ok := choice(c, "proxy", T("Proxy"), labels, at); ok {
+				s.Proxy = modes[i]
+				a.applyProxy()
+			}
+		})
+		if s.Proxy == netclient.Custom {
+			if a.proxyText == nil {
+				address := s.ProxyAddress
+				a.proxyText = &address
+			}
+			// The address is kept as it's submitted, or as the focus leaves it:
+			// one a proxy doesn't go by is left out, and the row says why.
+			desc := T("An HTTP or SOCKS5 proxy, such as http://127.0.0.1:7890")
+			_, err := netclient.ParseURL(*a.proxyText)
+			if *a.proxyText == "" {
+				desc = T("Enter the address of a proxy")
+			} else if err != nil {
+				desc = Tf("%s is not an address a proxy goes by", *a.proxyText)
+			}
+			row(T("Proxy Address"), desc, func() {
+				in := ui.TextInput(c.Key("proxy-address"), a.proxyText).Placeholder("http://127.0.0.1:7890").
+					Label(T("Proxy Address")).FontSize(13).Width(200)
+				if (in.Submitted() || !in.Focused()) && *a.proxyText != s.ProxyAddress && err == nil {
+					s.ProxyAddress = strings.TrimSpace(*a.proxyText)
+					a.applyProxy()
+				}
+			})
+		}
 	})
 
 	add("cache", T("Cache"), iconDatabase, func(row settingsRow, block settingsBlock) {

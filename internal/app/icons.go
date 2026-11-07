@@ -93,6 +93,7 @@ var (
 	iconUpDown   = strokeIcon(`<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>`)
 	iconPlug     = strokeIcon(`<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/>`)
 	iconLaptop   = strokeIcon(`<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20M9 4v1.5a1.5 1.5 0 0 0 1.5 1.5h3A1.5 1.5 0 0 0 15 5.5V4"/>`)
+	iconGlobe    = strokeIcon(`<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/>`)
 	iconDatabase = strokeIcon(`<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0"/>`)
 	iconFlask    = strokeIcon(`<path d="M9 3h6M10 3v6.5L4.6 18.2A2 2 0 0 0 6.3 21h11.4a2 2 0 0 0 1.7-2.8L14 9.5V3M7.5 15h9"/>`)
 	iconRefresh  = strokeIcon(`<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8M21 3v5h-5"/>`)

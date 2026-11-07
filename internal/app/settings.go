@@ -9,6 +9,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"mygo-music/internal/i18n"
+	"mygo-music/internal/netclient"
 )
 
 // settings are the listener's choices, kept in settings.json in the user
@@ -83,12 +84,19 @@ type settings struct {
 	CacheMB int `json:"cacheMB"`
 	// SearchHistory keeps submitted keywords, most recent first.
 	SearchHistory []string `json:"searchHistory,omitempty"`
+	// Proxy is how the app reaches the network: as the system's settings say
+	// (netclient.System), through ProxyAddress (netclient.Custom), or directly
+	// (netclient.Direct).
+	Proxy string `json:"proxy,omitempty"`
+	// ProxyAddress is the proxy the app goes through when Proxy is Custom,
+	// such as http://127.0.0.1:7890 or socks5://127.0.0.1:1080.
+	ProxyAddress string `json:"proxyAddress,omitempty"`
 
 	path string // where they were loaded from, and are saved to
 }
 
 func defaultSettings() settings {
-	return settings{Language: i18n.System, NotchActivity: true, Quality: "high", Appearance: "system", Volume: 0.8, Normalize: true, AppIcon: "dock-and-menubar", CacheMB: 2048}
+	return settings{Language: i18n.System, NotchActivity: true, Quality: "high", Appearance: "system", Volume: 0.8, Normalize: true, AppIcon: "dock-and-menubar", CacheMB: 2048, Proxy: netclient.System}
 }
 
 func settingsPath() (string, error) {
@@ -126,6 +134,13 @@ func (s settings) save() error {
 		return err
 	}
 	return os.WriteFile(path, b, 0o600)
+}
+
+// applyProxy makes the app reach the network the way the listener chose: what
+// every client of it asked for goes through from now on. An address no proxy
+// goes by is left as it was, as the settings show.
+func (s settings) applyProxy() {
+	netclient.Set(s.Proxy, s.ProxyAddress)
 }
 
 // applyAppearance makes the windows light, dark, or follow the system. Only

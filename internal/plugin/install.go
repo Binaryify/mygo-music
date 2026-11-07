@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"mygo-music/internal/local"
+	"mygo-music/internal/netclient"
 )
 
 // Plugins install from GitHub: a repository's latest release, as the zip it
@@ -72,7 +73,7 @@ var ErrNoRepo = errors.New("no such public repository on GitHub")
 // githubAPI is GitHub's API; tests replace it, and installClient.
 var (
 	githubAPI     = "https://api.github.com"
-	installClient = &http.Client{Timeout: 10 * time.Minute}
+	installClient = netclient.Client(10 * time.Minute)
 )
 
 var (
