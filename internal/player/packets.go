@@ -1,6 +1,7 @@
 package player
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -8,6 +9,9 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/mewkiz/flac"
+	"github.com/mewkiz/flac/frame"
+	"github.com/mewkiz/flac/meta"
 	aacpcm "github.com/tphakala/go-aac/pcm"
 
 	"mygo-music/internal/mp4"
@@ -154,8 +158,10 @@ func (s *packetStream) Close() error {
 
 func (s *packetStream) source() (*download, *spectrum) { return s.dl, s.spec }
 
-// openMP4Stream opens an .m4a, of ALAC or AAC.
-func openMP4Stream(dl *download) (*packetStream, error) {
+// openMP4Stream opens an .m4a, of ALAC, FLAC or AAC. One cut into fragments,
+// as a stream for DASH is, plays as its fragments come: its length is what
+// its index says, or else its source, until all of them are in.
+func openMP4Stream(dl *download, durationMs int64) (*packetStream, error) {
 	size := dl.size
 	if size <= 0 {
 		size = math.MaxInt64
@@ -172,6 +178,12 @@ func openMP4Stream(dl *download) (*packetStream, error) {
 			return nil, err
 		}
 		s.dec, s.rate = d, int(d.rate)
+	case "fLaC":
+		d, err := newFLACPacketDecoder(a.Config)
+		if err != nil {
+			return nil, err
+		}
+		s.dec, s.rate = d, int(d.info.SampleRate)
 	case "mp4a":
 		d, err := newAACDecoder(a.Config)
 		if err != nil {
@@ -184,6 +196,28 @@ func openMP4Stream(dl *download) (*packetStream, error) {
 	}
 	// In frames, from the track's timescale: most often the same.
 	frames := func(t int64) int64 { return t * int64(s.rate) / a.Timescale }
+	s.prime = frames(a.Prime)
+	s.skip = s.prime
+	s.spec = newSpectrum(s.rate)
+	if a.Fragmented {
+		s.fragments(a, size, frames)
+		dl.mu.Lock()
+		whole := dl.done || dl.onDisk
+		dl.mu.Unlock()
+		switch {
+		case whole:
+			for s.findMore() {
+			}
+		case a.Duration > 0:
+			s.frames = frames(a.Duration) - s.prime
+		case durationMs > 0:
+			s.frames = durationMs * int64(s.rate) / 1000
+		}
+		if !s.have(0) {
+			return nil, errors.New("mp4: no fragments")
+		}
+		return s, nil
+	}
 	s.offs = a.Offsets
 	s.sizes = make([]int, len(a.Sizes))
 	s.ends = make([]int64, len(a.Ends))
@@ -191,11 +225,59 @@ func openMP4Stream(dl *download) (*packetStream, error) {
 		s.sizes[i] = int(a.Sizes[i])
 		s.ends[i] = frames(a.Ends[i])
 	}
-	s.prime = frames(a.Prime)
-	s.skip = s.prime
 	s.frames, s.exact = s.ends[len(s.ends)-1]-s.prime, true
-	s.spec = newSpectrum(s.rate)
 	return s, nil
+}
+
+// fragments has the stream find a fragmented MP4's packets as it needs
+// them, a fragment at a time, walking the boxes after the movie header.
+func (s *packetStream) fragments(a *mp4.Track, size int64, frames func(int64) int64) {
+	s.frames = -1
+	r := mp4Reader{s.dl}
+	off := a.Next
+	var h [16]byte
+	s.more = func() bool {
+		for off+8 <= size {
+			if _, err := r.ReadAt(h[:8], off); err != nil {
+				return false
+			}
+			n, head := int64(binary.BigEndian.Uint32(h[:])), int64(8)
+			if n == 1 {
+				if _, err := r.ReadAt(h[8:], off+8); err != nil {
+					return false
+				}
+				n, head = int64(binary.BigEndian.Uint64(h[8:])), 16
+			}
+			if n < head {
+				return false // to the end, or broken: no more fragments
+			}
+			at := off
+			off += n
+			if string(h[4:8]) != "moof" {
+				continue
+			}
+			if n > 16<<20 {
+				return false
+			}
+			moof := make([]byte, n-head)
+			if _, err := r.ReadAt(moof, at+head); err != nil {
+				return false
+			}
+			found := len(a.Sizes)
+			if err := a.Fragment(moof, at); err != nil {
+				return false
+			}
+			for i := found; i < len(a.Sizes); i++ {
+				s.offs = append(s.offs, a.Offsets[i])
+				s.sizes = append(s.sizes, int(a.Sizes[i]))
+				s.ends = append(s.ends, frames(a.Ends[i]))
+			}
+			if len(a.Sizes) > found {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // aacDecoder decodes AAC-LC, with go-aac: HE-AAC it refuses.
@@ -234,6 +316,61 @@ func (d *aacDecoder) decode(dst []float32, packet []byte) ([]float32, error) {
 
 func (d *aacDecoder) reset()       { d.fd.Reset() }
 func (d *aacDecoder) preroll() int { return 1 }
+
+// flacPacketDecoder decodes FLAC frames, each an MP4's packet: they stand
+// alone.
+type flacPacketDecoder struct {
+	info *meta.StreamInfo
+	r    bytes.Reader
+}
+
+// newFLACPacketDecoder reads the stream info from an MP4's FLAC
+// configuration: its metadata blocks, as a FLAC file has them after "fLaC".
+func newFLACPacketDecoder(blocks []byte) (*flacPacketDecoder, error) {
+	st, err := flac.New(bytes.NewReader(append([]byte("fLaC"), blocks...)))
+	if err != nil {
+		return nil, err
+	}
+	if st.Info == nil || st.Info.SampleRate == 0 || st.Info.NChannels == 0 {
+		return nil, errors.New("flac: no stream info")
+	}
+	return &flacPacketDecoder{info: st.Info}, nil
+}
+
+func (d *flacPacketDecoder) decode(dst []float32, packet []byte) (out []float32, err error) {
+	// The decoder may panic on a frame gone bad.
+	defer func() {
+		if recover() != nil {
+			out, err = dst, errors.New("flac: bad frame")
+		}
+	}()
+	d.r.Reset(packet)
+	f, err := frame.New(&d.r)
+	if err != nil {
+		return dst, err
+	}
+	if f.BitsPerSample == 0 {
+		f.BitsPerSample = d.info.BitsPerSample
+	}
+	if f.SampleRate == 0 {
+		f.SampleRate = d.info.SampleRate
+	}
+	if err := f.Parse(); err != nil {
+		return dst, err
+	}
+	left, right := f.Subframes[0].Samples, f.Subframes[0].Samples
+	if len(f.Subframes) > 1 {
+		right = f.Subframes[1].Samples
+	}
+	scale := float32(1 / math.Exp2(float64(f.BitsPerSample-1)))
+	for i := range int(f.BlockSize) {
+		dst = append(dst, float32(left[i])*scale, float32(right[i])*scale)
+	}
+	return dst, nil
+}
+
+func (d *flacPacketDecoder) reset()       {}
+func (d *flacPacketDecoder) preroll() int { return 0 }
 
 func (d *alacDecoder) reset()       {}
 func (d *alacDecoder) preroll() int { return 0 }

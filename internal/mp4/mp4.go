@@ -14,9 +14,11 @@ import (
 
 // Track is an MP4's first sound track.
 type Track struct {
-	Codec     string // "alac" or "mp4a"
-	Config    []byte // ALAC's magic cookie, or AAC's AudioSpecificConfig
-	Timescale int64  // the units of its times, a second's
+	Codec string // "alac", "fLaC" or "mp4a"
+	// Config is ALAC's magic cookie, FLAC's metadata blocks, or AAC's
+	// AudioSpecificConfig.
+	Config    []byte
+	Timescale int64 // the units of its times, a second's
 	// Duration is how long it is, in the timescale, as its header says.
 	Duration int64
 	// Prime is where the edit list starts it: the encoder's priming, in
@@ -27,6 +29,20 @@ type Track struct {
 	Offsets []int64
 	Sizes   []uint32
 	Ends    []int64
+
+	// Fragmented says the packets aren't in the movie header's tables but
+	// in fragments after it, as a stream cut up for DASH has them: the
+	// tables fill in as Fragment reads each. Next is where the boxes after
+	// the movie header start.
+	Fragmented bool
+	Next       int64
+	id         uint32 // the track's ID, which its fragments name
+	defaults   fragmentDefaults
+}
+
+// fragmentDefaults are what a fragment's packets are unless it says.
+type fragmentDefaults struct {
+	duration, size uint32
 }
 
 // ErrNoMovie says an MP4 has no movie header: no tracks to play.
@@ -65,7 +81,13 @@ func Read(r io.ReaderAt, size int64, tables bool) (*Track, error) {
 			if _, err := r.ReadAt(moov, off+head); err != nil {
 				return nil, err
 			}
-			return parseMoov(moov, tables)
+			a, err := parseMoov(moov, tables)
+			if err != nil || !a.Fragmented {
+				return a, err
+			}
+			a.Next = off + n
+			a.readIndex(r, size)
+			return a, nil
 		}
 		off += n
 	}
@@ -119,6 +141,7 @@ func child(b []byte, path ...string) []byte {
 
 // parseMoov finds the first sound track in a movie header.
 func parseMoov(moov []byte, tables bool) (*Track, error) {
+	mvex := child(moov, "mvex")
 	for typ, trak := range boxes(moov) {
 		if typ != "trak" {
 			continue
@@ -127,7 +150,7 @@ func parseMoov(moov []byte, tables bool) (*Track, error) {
 		if hdlr := child(mdia, "hdlr"); len(hdlr) < 12 || string(hdlr[8:12]) != "soun" {
 			continue
 		}
-		a, err := parseTrack(trak, mdia, tables)
+		a, err := parseTrack(trak, mdia, mvex, tables)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +161,7 @@ func parseMoov(moov []byte, tables bool) (*Track, error) {
 
 var errMP4Table = errors.New("mp4: bad sample table")
 
-func parseTrack(trak, mdia []byte, tables bool) (*Track, error) {
+func parseTrack(trak, mdia, mvex []byte, tables bool) (*Track, error) {
 	a := &Track{}
 	mdhd := child(mdia, "mdhd")
 	switch {
@@ -156,7 +179,21 @@ func parseTrack(trak, mdia []byte, tables bool) (*Track, error) {
 	if err := a.parseEntry(child(stbl, "stsd")); err != nil {
 		return nil, err
 	}
-	if tables {
+	if mvex != nil && !hasSamples(stbl) {
+		a.Fragmented = true
+		if tkhd := child(trak, "tkhd"); len(tkhd) >= 16 {
+			at := 12
+			if tkhd[0] == 1 {
+				at = 20
+			}
+			a.id = binary.BigEndian.Uint32(tkhd[at:])
+		}
+		for typ, trex := range boxes(mvex) {
+			if typ == "trex" && len(trex) >= 24 && binary.BigEndian.Uint32(trex[4:]) == a.id {
+				a.defaults = fragmentDefaults{binary.BigEndian.Uint32(trex[12:]), binary.BigEndian.Uint32(trex[16:])}
+			}
+		}
+	} else if tables {
 		if err := a.parseTables(stbl); err != nil {
 			return nil, err
 		}
@@ -179,7 +216,10 @@ func parseTrack(trak, mdia []byte, tables bool) (*Track, error) {
 				t, b = int64(int32(binary.BigEndian.Uint32(b[4:]))), b[12:]
 			}
 			if t >= 0 { // past an empty edit, which plays nothing
-				a.Prime = min(t, a.Duration)
+				a.Prime = t
+				if a.Duration > 0 {
+					a.Prime = min(t, a.Duration)
+				}
 				break
 			}
 		}
@@ -217,6 +257,12 @@ func (a *Track) parseEntry(stsd []byte) error {
 			return errors.New("mp4: no ALAC configuration")
 		}
 		a.Config = cookie[4:]
+	case "fLaC":
+		dfla := child(inner, "dfLa")
+		if len(dfla) < 4+4+34 {
+			return errors.New("mp4: no FLAC configuration")
+		}
+		a.Config = dfla[4:]
 	case "mp4a":
 		esds := child(inner, "esds")
 		if len(esds) < 4 {
@@ -422,11 +468,11 @@ func (a *Track) parseTables(stbl []byte) error {
 	return nil
 }
 
-// Playable says whether the player decodes the track: ALAC, or AAC-LC. HE-AAC
-// it doesn't.
+// Playable says whether the player decodes the track: ALAC, FLAC, or AAC-LC.
+// HE-AAC it doesn't.
 func (a *Track) Playable() bool {
 	switch a.Codec {
-	case "alac":
+	case "alac", "fLaC":
 		return true
 	case "mp4a":
 		_, err := aacpcm.ParseASC(a.Config)
@@ -435,10 +481,181 @@ func (a *Track) Playable() bool {
 	return false
 }
 
-// Lossless says whether the track is ALAC's.
-func (a *Track) Lossless() bool { return a.Codec == "alac" }
+// Lossless says whether the track is ALAC's or FLAC's.
+func (a *Track) Lossless() bool { return a.Codec == "alac" || a.Codec == "fLaC" }
 
 // Millis is how long the track plays, in milliseconds, without its priming.
 func (a *Track) Millis() int64 {
 	return max(a.Duration-a.Prime, 0) * 1000 / a.Timescale
+}
+
+// hasSamples says whether a sample table lists any packets: a fragmented
+// file's lists none, its packets being in the fragments.
+func hasSamples(stbl []byte) bool {
+	if stsz := child(stbl, "stsz"); len(stsz) >= 12 {
+		return binary.BigEndian.Uint32(stsz[8:]) > 0
+	}
+	if stz2 := child(stbl, "stz2"); len(stz2) >= 12 {
+		return binary.BigEndian.Uint32(stz2[8:]) > 0
+	}
+	return false
+}
+
+// readIndex reads how long a fragmented track is from the segment index
+// that comes before its first fragment, if there's one: the movie header
+// of such a file says nothing of it.
+func (a *Track) readIndex(r io.ReaderAt, size int64) {
+	var h [8]byte
+	for off := a.Next; off+8 <= size; {
+		if _, err := r.ReadAt(h[:], off); err != nil {
+			return
+		}
+		n := int64(binary.BigEndian.Uint32(h[:]))
+		switch string(h[4:]) {
+		case "sidx":
+			if n < 8+24 || n > 1<<20 || n > size-off {
+				return
+			}
+			sidx := make([]byte, n-8)
+			if _, err := r.ReadAt(sidx, off+8); err != nil {
+				return
+			}
+			if d, ok := indexDuration(sidx); ok && a.Timescale > 0 {
+				a.Duration = d * a.Timescale / int64(binary.BigEndian.Uint32(sidx[8:]))
+			}
+			return
+		case "moof", "mdat":
+			return
+		}
+		if n < 8 {
+			return
+		}
+		off += n
+	}
+}
+
+// indexDuration adds up the durations of the segments a segment index lists.
+func indexDuration(sidx []byte) (int64, bool) {
+	at := 20
+	if len(sidx) > 0 && sidx[0] == 1 {
+		at = 28
+	}
+	if len(sidx) < at+4 || binary.BigEndian.Uint32(sidx[8:]) == 0 {
+		return 0, false
+	}
+	b := sidx[at:]
+	n := int(binary.BigEndian.Uint16(b[2:]))
+	b = b[4:]
+	if len(b) < 12*n {
+		return 0, false
+	}
+	var d int64
+	for i := range n {
+		d += int64(binary.BigEndian.Uint32(b[12*i+4:]))
+	}
+	return d, d > 0
+}
+
+// Fragment reads a fragment's movie header, the body of the moof box at off
+// in the file, adding where the track's packets are in it to the tables.
+func (a *Track) Fragment(moof []byte, off int64) error {
+	for typ, traf := range boxes(moof) {
+		if typ != "traf" {
+			continue
+		}
+		tfhd := child(traf, "tfhd")
+		if len(tfhd) < 8 || binary.BigEndian.Uint32(tfhd[4:]) != a.id {
+			continue
+		}
+		flags := binary.BigEndian.Uint32(tfhd) & 0xffffff
+		base := off // where the moof starts, unless it says
+		d := a.defaults
+		b := tfhd[8:]
+		field := func(flag uint32, n int) ([]byte, bool) {
+			if flags&flag == 0 {
+				return nil, false
+			}
+			if len(b) < n {
+				return nil, false
+			}
+			v := b[:n]
+			b = b[n:]
+			return v, true
+		}
+		if v, ok := field(0x01, 8); ok {
+			base = int64(binary.BigEndian.Uint64(v))
+		}
+		field(0x02, 4) // the sample description: there's one
+		if v, ok := field(0x08, 4); ok {
+			d.duration = binary.BigEndian.Uint32(v)
+		}
+		if v, ok := field(0x10, 4); ok {
+			d.size = binary.BigEndian.Uint32(v)
+		}
+		at := base
+		for typ, trun := range boxes(traf) {
+			if typ != "trun" {
+				continue
+			}
+			var err error
+			if at, err = a.run(trun, base, at, d); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// run reads a track run: packets one after another, from at unless it says
+// where from base. It returns where the next run starts, unless it says.
+func (a *Track) run(trun []byte, base, at int64, d fragmentDefaults) (int64, error) {
+	if len(trun) < 8 {
+		return 0, errMP4Table
+	}
+	flags := binary.BigEndian.Uint32(trun) & 0xffffff
+	n := int(binary.BigEndian.Uint32(trun[4:]))
+	b := trun[8:]
+	if flags&0x01 != 0 {
+		if len(b) < 4 {
+			return 0, errMP4Table
+		}
+		at = base + int64(int32(binary.BigEndian.Uint32(b)))
+		b = b[4:]
+	}
+	if flags&0x04 != 0 { // the first packet's flags
+		if len(b) < 4 {
+			return 0, errMP4Table
+		}
+		b = b[4:]
+	}
+	per := 0
+	for _, f := range []uint32{0x100, 0x200, 0x400, 0x800} {
+		if flags&f != 0 {
+			per += 4
+		}
+	}
+	if n > maxSamples || len(b) < n*per || len(a.Sizes)+n > maxSamples {
+		return 0, errMP4Table
+	}
+	var t int64
+	if len(a.Ends) > 0 {
+		t = a.Ends[len(a.Ends)-1]
+	}
+	for range n {
+		duration, size := d.duration, d.size
+		e := b
+		if flags&0x100 != 0 {
+			duration, e = binary.BigEndian.Uint32(e), e[4:]
+		}
+		if flags&0x200 != 0 {
+			size = binary.BigEndian.Uint32(e)
+		}
+		b = b[per:]
+		t += int64(duration)
+		a.Offsets = append(a.Offsets, at)
+		a.Sizes = append(a.Sizes, size)
+		a.Ends = append(a.Ends, t)
+		at += int64(size)
+	}
+	return at, nil
 }

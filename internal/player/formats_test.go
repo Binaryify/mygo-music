@@ -88,6 +88,62 @@ func TestAACInMP4(t *testing.T) {
 	seekLands(t, b, got, 0.05, 0, 1, 4096, 50000, 123457)
 }
 
+// An AAC .m4a cut into fragments, as a stream for DASH is, plays what the
+// whole one does. Its movie header has no edit list, so the encoder's priming
+// plays too: the fragments are what the whole one has after it.
+func TestFragmentedAAC(t *testing.T) {
+	b := readFixture(t, "seek-aac-frag.m4a")
+	got := decodeAll(t, b)
+	whole := decodeAll(t, readFixture(t, "seek-aac.m4a"))
+	const prime = 1024
+	if len(got) < len(whole)+prime*2 {
+		t.Fatalf("decoded %d samples, the whole file %d", len(got), len(whole))
+	}
+	if db := snr(got[prime*2:], whole); db < 20 {
+		t.Errorf("%.1f dB from the whole file", db)
+	}
+	seekLands(t, b, got, 0.05, 0, 1, 4096, 50000, 123457)
+}
+
+// A fragmented .m4a starts playing with only its first fragment in, its length
+// from its index, as a stream from a site serving DASH comes in.
+func TestFragmentedComingIn(t *testing.T) {
+	b := readFixture(t, "seek-aac-frag.m4a")
+	got := decodeAll(t, b)
+	dl := downloaded(b)
+	dl.n, dl.done = 10<<10, false
+	s, err := openStream(dl, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Len()*2 != int64(len(got)) {
+		t.Fatalf("length %d, though %d frames decode", s.Len(), len(got)/2)
+	}
+	buf := make([]float32, 4096)
+	n, err := s.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := maxDiff(buf[:n], got); d > 0.05 {
+		t.Errorf("off by up to %.4f", d)
+	}
+}
+
+// FLAC in a fragmented .m4a, as a lossless DASH stream has it, decodes to the
+// very samples of the FLAC file, and lands on the frame it's asked for.
+func TestFragmentedFLAC(t *testing.T) {
+	b := readFixture(t, "seek-flac-frag.m4a")
+	got := decodeAll(t, b)
+	flac := decodeAll(t, readFixture(t, "seek.flac"))
+	if len(got) != len(flac) {
+		t.Fatalf("decoded %d samples, the FLAC %d", len(got), len(flac))
+	}
+	if d := maxDiff(got, flac); d != 0 {
+		t.Fatalf("off from the FLAC by up to %g", d)
+	}
+	seekLands(t, b, got, 0, 0, 1, 4095, 4096, 50000, 88199)
+}
+
 // An AAC file of ADTS frames, whole, knows its length from them; one still
 // coming in plays with the length its source says, and a seek past what's
 // been found finds the frames up to there.
